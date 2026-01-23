@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/bakery_status.dart';
 import '../api/bakery_service.dart';
+import '../api/network_scanner.dart';
 import '../widgets/temperature_card.dart';
 import '../widgets/control_card.dart';
 
@@ -14,42 +15,121 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
-  // Core data
-  String _currentIp = "";
-  bool _isIpSet = false;
-  BakeryStatus _status = BakeryStatus.empty();
-  BakeryService? _bakeryService;
+// Core data
+String _currentIp = "";
+bool _isIpSet = false;
+BakeryStatus _status = BakeryStatus.empty();
+BakeryService? _bakeryService;
 
-  Timer? _timer;
-  bool _isOffline = true;
+Timer? _timer;
+bool _isOffline = true;
+  
+// Network scanning state
+bool _isScanning = false;
+String _scanProgress = "";
+  
+// First load auto-scan state
+bool _isFirstLoadScanning = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _loadSavedIp();
-  }
+@override
+void initState() {
+  super.initState();
+  _loadSavedIp();
+}
 
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
+@override
+void dispose() {
+  _timer?.cancel();
+  super.dispose();
+}
 
-  // --- 💾 Local Storage Logic ---
-  Future<void> _loadSavedIp() async {
-    final prefs = await SharedPreferences.getInstance();
+// --- 💾 Local Storage Logic ---
+Future<void> _loadSavedIp() async {
+  final prefs = await SharedPreferences.getInstance();
+  final savedIp = prefs.getString('saved_ip') ?? "";
+
+  if (savedIp.isNotEmpty) {
+    // IP exists, use it
     setState(() {
-      _currentIp = prefs.getString('saved_ip') ?? "";
-
-      if (_currentIp.isNotEmpty) {
-        _isIpSet = true;
-        _bakeryService = BakeryService(ipAddress: _currentIp);
-        _startPolling();
-      } else {
-        // First time opening, show settings dialog after a delay
-        Future.delayed(Duration.zero, () => _showSmartIpDialog());
-      }
+      _currentIp = savedIp;
+      _isIpSet = true;
+      _bakeryService = BakeryService(ipAddress: savedIp);
     });
+    _startPolling();
+  } else {
+    // No saved IP - auto-scan on first load
+    setState(() {
+      _isFirstLoadScanning = true;
+    });
+    await _startAutoScan();
+  }
+}
+  
+  // --- 🔍 Auto-scan on first load ---
+  Future<void> _startAutoScan() async {
+    try {
+      final discoveredIp = await NetworkScanner.scanNetwork(
+        onProgress: (progress) {
+          if (mounted) {
+            setState(() {
+              _scanProgress = progress;
+            });
+          }
+        },
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        _isFirstLoadScanning = false;
+      });
+
+      if (discoveredIp != null) {
+        // Success - save and use the IP
+        await _saveIp(discoveredIp);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✓ 自动发现设备: $discoveredIp'),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      } else {
+        // Scan failed - show error and manual dialog
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✗ 自动扫描未找到设备'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 3),
+          ),
+        );
+        // Show manual input dialog after scan fails
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (mounted) {
+            _showSmartIpDialog();
+          }
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isFirstLoadScanning = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('扫描失败: $e'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+      // Show manual input dialog after error
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) {
+          _showSmartIpDialog();
+        }
+      });
+    }
   }
 
   Future<void> _saveIp(String ip) async {
@@ -115,26 +195,94 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
+  // --- 🔍 Network Scanning Logic ---
+  Future<void> _startNetworkScan() async {
+    if (_isScanning) return;
+
+    setState(() {
+      _isScanning = true;
+      _scanProgress = "准备扫描...";
+    });
+
+    try {
+      final discoveredIp = await NetworkScanner.scanNetwork(
+        onProgress: (progress) {
+          if (mounted) {
+            setState(() {
+              _scanProgress = progress;
+            });
+          }
+        },
+      );
+
+      if (discoveredIp != null) {
+        // Found device - save and connect
+        await _saveIp(discoveredIp);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('✓ 自动发现设备: $discoveredIp'),
+              backgroundColor: Colors.green,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+      } else {
+        // No device found
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('✗ 未找到设备，请检查网络连接或手动输入 IP'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 4),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      // Error during scan
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('扫描失败: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isScanning = false;
+          _scanProgress = "";
+        });
+      }
+    }
+  }
+
   // --- 📱 Smart IP Dialog Logic ---
   void _showSmartIpDialog() {
-    // Analyze if current IP follows smart format (192.168.XXX.166)
+    // Analyze if current IP follows smart format (192.168.XXX.XXX)
     bool isSmartMode = false;
-    String smartPart = "";
+    String smartPart3 = "";
+    String smartPart4 = "";
 
     final parts = _currentIp.split('.');
     if (parts.length == 4 &&
         parts[0] == '192' &&
-        parts[1] == '168' &&
-        parts[3] == '166') {
+        parts[1] == '168') {
       isSmartMode = true;
-      smartPart = parts[2]; // Extract middle number
+      smartPart3 = parts[2]; // Extract third number
+      smartPart4 = parts[3]; // Extract fourth number
     } else if (_currentIp.isEmpty) {
       isSmartMode = true; // Default to smart mode if empty
     }
 
     // Controllers
-    final TextEditingController smartController =
-        TextEditingController(text: smartPart);
+    final TextEditingController smartController3 =
+        TextEditingController(text: smartPart3);
+    final TextEditingController smartController4 =
+        TextEditingController(text: smartPart4);
     final TextEditingController fullController =
         TextEditingController(text: _currentIp);
 
@@ -152,7 +300,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   if (isSmartMode) ...[
                     // === Mode A: Quick Fill ===
                     const Text(
-                      '请输入 IP 中间的数字:',
+                      '请输入 IP 后两段数字:',
                       style: TextStyle(color: Colors.grey),
                     ),
                     const SizedBox(height: 15),
@@ -171,7 +319,7 @@ class _DashboardPageState extends State<DashboardPage> {
                         SizedBox(
                           width: 60,
                           child: TextField(
-                            controller: smartController,
+                            controller: smartController3,
                             keyboardType: TextInputType.number,
                             textAlign: TextAlign.center,
                             autofocus: true,
@@ -188,10 +336,28 @@ class _DashboardPageState extends State<DashboardPage> {
                           ),
                         ),
                         const Text(
-                          ".166",
+                          ".",
                           style: TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        SizedBox(
+                          width: 60,
+                          child: TextField(
+                            controller: smartController4,
+                            keyboardType: TextInputType.number,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.blue,
+                            ),
+                            decoration: const InputDecoration(
+                              contentPadding: EdgeInsets.symmetric(vertical: 4),
+                              isDense: true,
+                              hintText: "XXX",
+                            ),
                           ),
                         ),
                       ],
@@ -223,12 +389,15 @@ class _DashboardPageState extends State<DashboardPage> {
                         if (isSmartMode) {
                           // Switch to smart mode: extract
                           final p = fullController.text.split('.');
-                          if (p.length == 4) smartController.text = p[2];
+                          if (p.length == 4) {
+                            smartController3.text = p[2];
+                            smartController4.text = p[3];
+                          }
                         } else {
                           // Switch to full mode: auto-construct
-                          if (smartController.text.isNotEmpty) {
+                          if (smartController3.text.isNotEmpty && smartController4.text.isNotEmpty) {
                             fullController.text =
-                                "192.168.${smartController.text}.166";
+                                "192.168.${smartController3.text}.${smartController4.text}";
                           }
                         }
                       });
@@ -251,9 +420,10 @@ class _DashboardPageState extends State<DashboardPage> {
                     String finalIp = "";
                     if (isSmartMode) {
                       // Auto-construct
-                      final part = smartController.text.trim();
-                      if (part.isNotEmpty) {
-                        finalIp = "192.168.$part.166";
+                      final part3 = smartController3.text.trim();
+                      final part4 = smartController4.text.trim();
+                      if (part3.isNotEmpty && part4.isNotEmpty) {
+                        finalIp = "192.168.$part3.$part4";
                       }
                     } else {
                       // Use full input
@@ -277,9 +447,53 @@ class _DashboardPageState extends State<DashboardPage> {
 
   @override
   Widget build(BuildContext context) {
+    // Show loading screen during first load auto-scan
+    if (_isFirstLoadScanning) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('🍓 Smart Bakery'),
+          centerTitle: true,
+          backgroundColor: Colors.white,
+          elevation: 2,
+        ),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const CircularProgressIndicator(
+                strokeWidth: 3,
+              ),
+              const SizedBox(height: 24),
+              const Text(
+                'Auto-scanning local network...',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.blue,
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (_scanProgress.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 32),
+                  child: Text(
+                    _scanProgress,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+    }
+    
     return Scaffold(
       appBar: AppBar(
-        title: const Text('🍓 RPi Monitor'),
+        title: const Text('🍓 Smart Bakery'),
         centerTitle: true,
         backgroundColor: Colors.white,
         elevation: 2,
@@ -312,10 +526,42 @@ class _DashboardPageState extends State<DashboardPage> {
             const Icon(Icons.link_off, size: 80, color: Colors.orange),
             const SizedBox(height: 20),
             const Text('请先配置连接地址', style: TextStyle(fontSize: 18)),
-            const SizedBox(height: 20),
+            const SizedBox(height: 30),
+            // Auto Scan Button
+            ElevatedButton.icon(
+              onPressed: _isScanning ? null : _startNetworkScan,
+              icon: _isScanning
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.radar),
+              label: Text(_isScanning ? '扫描中...' : '🔍 自动扫描'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            ),
+            if (_isScanning && _scanProgress.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text(
+                _scanProgress,
+                style: TextStyle(color: Colors.grey[600], fontSize: 14),
+              ),
+            ],
+            const SizedBox(height: 16),
+            const Text('或', style: TextStyle(color: Colors.grey)),
+            const SizedBox(height: 16),
+            // Manual IP Button
             ElevatedButton(
               onPressed: _showSmartIpDialog,
-              child: const Text('配置 IP'),
+              child: const Text('手动输入 IP'),
             ),
           ],
         ),
@@ -338,6 +584,33 @@ class _DashboardPageState extends State<DashboardPage> {
               style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 30),
+            // Auto Scan Button
+            ElevatedButton.icon(
+              onPressed: _isScanning ? null : _startNetworkScan,
+              icon: _isScanning
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.radar),
+              label: Text(_isScanning ? '扫描中...' : '🔍 自动扫描'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+              ),
+            ),
+            if (_isScanning && _scanProgress.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(
+                _scanProgress,
+                style: TextStyle(color: Colors.grey[600], fontSize: 12),
+              ),
+            ],
+            const SizedBox(height: 12),
             ElevatedButton.icon(
               icon: const Icon(Icons.refresh),
               label: const Text('修改配置'),
@@ -351,13 +624,111 @@ class _DashboardPageState extends State<DashboardPage> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Center(
-          child: Text(
-            "Connected to: $_currentIp",
-            style: TextStyle(color: Colors.grey[400], fontSize: 12),
+        // IP 地址卡片 - 醒目且可点击修改
+        Card(
+          elevation: 3,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          color: Colors.blue.shade50,
+          child: InkWell(
+            onTap: _showSmartIpDialog,
+            borderRadius: BorderRadius.circular(16),
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade100,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(
+                      Icons.wifi,
+                      color: Colors.blue,
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          '当前连接地址',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _currentIp,
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blue,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.blue.shade200),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.edit, size: 16, color: Colors.blue),
+                        SizedBox(width: 4),
+                        Text(
+                          '修改',
+                          style: TextStyle(
+                            color: Colors.blue,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Auto Scan Icon Button
+                  InkWell(
+                    onTap: _isScanning ? null : _startNetworkScan,
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: _isScanning ? Colors.grey.shade200 : Colors.blue.shade100,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: _isScanning
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.blue,
+                              ),
+                            )
+                          : const Icon(
+                              Icons.radar,
+                              color: Colors.blue,
+                              size: 20,
+                            ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 16),
         TemperatureCard(
           temperature: _status.temperature,
           humidity: _status.humidity,
