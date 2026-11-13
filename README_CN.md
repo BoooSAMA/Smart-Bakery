@@ -134,6 +134,29 @@ flutter run
 
 ---
 
+## 预编译 APK 与 Debug 备用方案
+
+每次发布都会在 [GitHub Releases](https://github.com/BoooSAMA/Smart-Bakery/releases) 附上一个预编译的 **通用版（universal）** release APK，任意 Android ABI 都能安装，无需选择架构。
+
+> **免责声明**：如果预编译 APK 在你的设备上无法正常使用——例如启动闪退、安装失败、无法连接，或表现与源码运行不一致——请改用源码运行 debug 版本：
+>
+> ```bash
+> git clone https://github.com/BoooSAMA/Smart-Bakery.git
+> cd Smart-Bakery/bakery_monitor
+> flutter pub get
+> flutter run
+> ```
+>
+> `flutter run` 构建的是 **debug** 版本（未经 R8 混淆、日志完整），便于排查问题，是 APK 异常时的推荐备用方案。
+>
+> 如果安装仍因「同包名下已存在其他签名的版本」而失败，请先卸载旧版：
+>
+> ```bash
+> adb uninstall com.example.bakery_monitor
+> ```
+
+---
+
 ## 项目结构
 
 ```

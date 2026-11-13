@@ -134,6 +134,29 @@ On first launch, the app will automatically scan for the Raspberry Pi. If auto-d
 
 ---
 
+## Prebuilt APK & Fallback to Debug Build
+
+Every [GitHub Release](https://github.com/BoooSAMA/Smart-Bakery/releases) ships a prebuilt **universal** release APK that works on any Android ABI (no need to pick an architecture).
+
+> **Disclaimer**: If the prebuilt APK does not work on your device — for example it crashes on launch, fails to install, cannot connect, or behaves differently from a source build — please run the app from source instead:
+>
+> ```bash
+> git clone https://github.com/BoooSAMA/Smart-Bakery.git
+> cd Smart-Bakery/bakery_monitor
+> flutter pub get
+> flutter run
+> ```
+>
+> `flutter run` builds a **debug** version (no R8 minification, full logs), which is easier to diagnose and is the recommended fallback whenever the release APK misbehaves.
+>
+> If installation still fails because a build with a different signature is already installed under the same package name, uninstall the old app first:
+>
+> ```bash
+> adb uninstall com.example.bakery_monitor
+> ```
+
+---
+
 ## Project Structure
 
 ```

@@ -138,3 +138,7 @@ gradle/
 *.cache
 coverage/
 doc/api/
+# ===== 本地工具 / 构建产物 =====
+.codegraph
+.omo/
+build-symbols/
